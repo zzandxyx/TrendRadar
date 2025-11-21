@@ -20,16 +20,16 @@ import requests
 import yaml
 
 
-VERSION = "3.0.4"
+VERSION = "3.1.0"
 
 
 # === SMTP邮件配置 ===
 SMTP_CONFIGS = {
-    # Gmail
+    # Gmail（使用 STARTTLS）
     "gmail.com": {"server": "smtp.gmail.com", "port": 587, "encryption": "TLS"},
-    # QQ邮箱
-    "qq.com": {"server": "smtp.qq.com", "port": 587, "encryption": "TLS"},
-    # Outlook
+    # QQ邮箱（使用 SSL，更稳定）
+    "qq.com": {"server": "smtp.qq.com", "port": 465, "encryption": "SSL"},
+    # Outlook（使用 STARTTLS）
     "outlook.com": {
         "server": "smtp-mail.outlook.com",
         "port": 587,
@@ -41,13 +41,15 @@ SMTP_CONFIGS = {
         "encryption": "TLS",
     },
     "live.com": {"server": "smtp-mail.outlook.com", "port": 587, "encryption": "TLS"},
-    # 网易邮箱
-    "163.com": {"server": "smtp.163.com", "port": 587, "encryption": "TLS"},
-    "126.com": {"server": "smtp.126.com", "port": 587, "encryption": "TLS"},
-    # 新浪邮箱
-    "sina.com": {"server": "smtp.sina.com", "port": 587, "encryption": "TLS"},
-    # 搜狐邮箱
-    "sohu.com": {"server": "smtp.sohu.com", "port": 587, "encryption": "TLS"},
+    # 网易邮箱（使用 SSL，更稳定）
+    "163.com": {"server": "smtp.163.com", "port": 465, "encryption": "SSL"},
+    "126.com": {"server": "smtp.126.com", "port": 465, "encryption": "SSL"},
+    # 新浪邮箱（使用 SSL）
+    "sina.com": {"server": "smtp.sina.com", "port": 465, "encryption": "SSL"},
+    # 搜狐邮箱（使用 SSL）
+    "sohu.com": {"server": "smtp.sohu.com", "port": 465, "encryption": "SSL"},
+    # 天翼邮箱（使用 SSL）
+    "189.cn": {"server": "smtp.189.cn", "port": 465, "encryption": "SSL"},
 }
 
 
@@ -69,12 +71,19 @@ def load_config():
         "VERSION_CHECK_URL": config_data["app"]["version_check_url"],
         "SHOW_VERSION_UPDATE": config_data["app"]["show_version_update"],
         "REQUEST_INTERVAL": config_data["crawler"]["request_interval"],
-        "REPORT_MODE": config_data["report"]["mode"],
+        "REPORT_MODE": os.environ.get("REPORT_MODE", "").strip()
+        or config_data["report"]["mode"],
         "RANK_THRESHOLD": config_data["report"]["rank_threshold"],
         "USE_PROXY": config_data["crawler"]["use_proxy"],
         "DEFAULT_PROXY": config_data["crawler"]["default_proxy"],
-        "ENABLE_CRAWLER": config_data["crawler"]["enable_crawler"],
-        "ENABLE_NOTIFICATION": config_data["notification"]["enable_notification"],
+        "ENABLE_CRAWLER": os.environ.get("ENABLE_CRAWLER", "").strip().lower()
+        in ("true", "1")
+        if os.environ.get("ENABLE_CRAWLER", "").strip()
+        else config_data["crawler"]["enable_crawler"],
+        "ENABLE_NOTIFICATION": os.environ.get("ENABLE_NOTIFICATION", "").strip().lower()
+        in ("true", "1")
+        if os.environ.get("ENABLE_NOTIFICATION", "").strip()
+        else config_data["notification"]["enable_notification"],
         "MESSAGE_BATCH_SIZE": config_data["notification"]["message_batch_size"],
         "DINGTALK_BATCH_SIZE": config_data["notification"].get(
             "dingtalk_batch_size", 20000
@@ -85,23 +94,34 @@ def load_config():
             "feishu_message_separator"
         ],
         "PUSH_WINDOW": {
-            "ENABLED": config_data["notification"]
+            "ENABLED": os.environ.get("PUSH_WINDOW_ENABLED", "").strip().lower()
+            in ("true", "1")
+            if os.environ.get("PUSH_WINDOW_ENABLED", "").strip()
+            else config_data["notification"]
             .get("push_window", {})
             .get("enabled", False),
             "TIME_RANGE": {
-                "START": config_data["notification"]
+                "START": os.environ.get("PUSH_WINDOW_START", "").strip()
+                or config_data["notification"]
                 .get("push_window", {})
                 .get("time_range", {})
                 .get("start", "08:00"),
-                "END": config_data["notification"]
+                "END": os.environ.get("PUSH_WINDOW_END", "").strip()
+                or config_data["notification"]
                 .get("push_window", {})
                 .get("time_range", {})
                 .get("end", "22:00"),
             },
-            "ONCE_PER_DAY": config_data["notification"]
+            "ONCE_PER_DAY": os.environ.get("PUSH_WINDOW_ONCE_PER_DAY", "").strip().lower()
+            in ("true", "1")
+            if os.environ.get("PUSH_WINDOW_ONCE_PER_DAY", "").strip()
+            else config_data["notification"]
             .get("push_window", {})
             .get("once_per_day", True),
-            "RECORD_RETENTION_DAYS": config_data["notification"]
+            "RECORD_RETENTION_DAYS": int(
+                os.environ.get("PUSH_WINDOW_RETENTION_DAYS", "").strip() or "0"
+            )
+            or config_data["notification"]
             .get("push_window", {})
             .get("push_record_retention_days", 7),
         },
@@ -126,6 +146,9 @@ def load_config():
     config["WEWORK_WEBHOOK_URL"] = os.environ.get(
         "WEWORK_WEBHOOK_URL", ""
     ).strip() or webhooks.get("wework_url", "")
+    config["WEWORK_MSG_TYPE"] = os.environ.get(
+        "WEWORK_MSG_TYPE", ""
+    ).strip() or webhooks.get("wework_msg_type", "markdown")
     config["TELEGRAM_BOT_TOKEN"] = os.environ.get(
         "TELEGRAM_BOT_TOKEN", ""
     ).strip() or webhooks.get("telegram_bot_token", "")
@@ -3565,6 +3588,50 @@ def send_to_dingtalk(
     return True
 
 
+def strip_markdown(text: str) -> str:
+    """去除文本中的 markdown 语法格式，用于个人微信推送"""
+
+    # 去除粗体 **text** 或 __text__
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+
+    # 去除斜体 *text* 或 _text_
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'_(.+?)_', r'\1', text)
+
+    # 去除删除线 ~~text~~
+    text = re.sub(r'~~(.+?)~~', r'\1', text)
+
+    # 转换链接 [text](url) -> text url（保留 URL）
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 \2', text)
+    # 如果不需要保留 URL，可以使用下面这行（只保留标题文本）：
+    # text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+
+    # 去除图片 ![alt](url) -> alt
+    text = re.sub(r'!\[(.+?)\]\(.+?\)', r'\1', text)
+
+    # 去除行内代码 `code`
+    text = re.sub(r'`(.+?)`', r'\1', text)
+
+    # 去除引用符号 >
+    text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)
+
+    # 去除标题符号 # ## ### 等
+    text = re.sub(r'^#+\s*', '', text, flags=re.MULTILINE)
+
+    # 去除水平分割线 --- 或 ***
+    text = re.sub(r'^[\-\*]{3,}\s*$', '', text, flags=re.MULTILINE)
+
+    # 去除 HTML 标签 <font color='xxx'>text</font> -> text
+    text = re.sub(r'<font[^>]*>(.+?)</font>', r'\1', text)
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # 清理多余的空行（保留最多两个连续空行）
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
+
+
 def send_to_wework(
     webhook_url: str,
     report_data: Dict,
@@ -3573,11 +3640,20 @@ def send_to_wework(
     proxy_url: Optional[str] = None,
     mode: str = "daily",
 ) -> bool:
-    """发送到企业微信（支持分批发送）"""
+    """发送到企业微信（支持分批发送，支持 markdown 和 text 两种格式）"""
     headers = {"Content-Type": "application/json"}
     proxies = None
     if proxy_url:
         proxies = {"http": proxy_url, "https": proxy_url}
+
+    # 获取消息类型配置（markdown 或 text）
+    msg_type = CONFIG.get("WEWORK_MSG_TYPE", "markdown").lower()
+    is_text_mode = msg_type == "text"
+
+    if is_text_mode:
+        print(f"企业微信使用 text 格式（个人微信模式）[{report_type}]")
+    else:
+        print(f"企业微信使用 markdown 格式（群机器人模式）[{report_type}]")
 
     # 获取分批内容
     batches = split_content_into_batches(report_data, "wework", update_info, mode=mode)
@@ -3586,17 +3662,28 @@ def send_to_wework(
 
     # 逐批发送
     for i, batch_content in enumerate(batches, 1):
-        batch_size = len(batch_content.encode("utf-8"))
+        # 添加批次标识
+        if len(batches) > 1:
+            if is_text_mode:
+                batch_header = f"[第 {i}/{len(batches)} 批次]\n\n"
+            else:
+                batch_header = f"**[第 {i}/{len(batches)} 批次]**\n\n"
+            batch_content = batch_header + batch_content
+
+        # 根据消息类型构建 payload
+        if is_text_mode:
+            # text 格式：去除 markdown 语法
+            plain_content = strip_markdown(batch_content)
+            payload = {"msgtype": "text", "text": {"content": plain_content}}
+            batch_size = len(plain_content.encode("utf-8"))
+        else:
+            # markdown 格式：保持原样
+            payload = {"msgtype": "markdown", "markdown": {"content": batch_content}}
+            batch_size = len(batch_content.encode("utf-8"))
+
         print(
             f"发送企业微信第 {i}/{len(batches)} 批次，大小：{batch_size} 字节 [{report_type}]"
         )
-
-        # 添加批次标识
-        if len(batches) > 1:
-            batch_header = f"**[第 {i}/{len(batches)} 批次]**\n\n"
-            batch_content = batch_header + batch_content
-
-        payload = {"msgtype": "markdown", "markdown": {"content": batch_content}}
 
         try:
             response = requests.post(
@@ -3724,7 +3811,14 @@ def send_to_email(
             # 使用自定义 SMTP 配置
             smtp_server = custom_smtp_server
             smtp_port = int(custom_smtp_port)
-            use_tls = smtp_port == 587
+            # 根据端口判断加密方式：465=SSL, 587=TLS
+            if smtp_port == 465:
+                use_tls = False  # SSL 模式（SMTP_SSL）
+            elif smtp_port == 587:
+                use_tls = True   # TLS 模式（STARTTLS）
+            else:
+                # 其他端口优先尝试 TLS（更安全，更广泛支持）
+                use_tls = True
         elif domain in SMTP_CONFIGS:
             # 使用预设配置
             config = SMTP_CONFIGS[domain]
